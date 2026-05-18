@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pytrim"
+version = "0.2.0"
+description = "A zero-dependency Python project optimizer for import cost, dependency bloat, lazy imports, and CI quality gates."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "PyTrim maintainers" }
+]
+keywords = ["python", "performance", "imports", "dependencies", "optimizer", "cli"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Quality Assurance",
+  "Topic :: Software Development :: Build Tools",
+  "Topic :: System :: Software Distribution",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/billjamesevans/pytrim"
+Repository = "https://github.com/billjamesevans/pytrim"
+Issues = "https://github.com/billjamesevans/pytrim/issues"
+Changelog = "https://github.com/billjamesevans/pytrim/releases"
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2",
+  "pytest>=9",
+  "ruff>=0.14",
+  "twine>=6",
+]
+
+[project.scripts]
+pytrim = "pytrim.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pytrim = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "N", "UP", "W"]
