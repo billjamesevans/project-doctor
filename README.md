@@ -3,17 +3,20 @@
 [![CI](https://github.com/billjamesevans/pytrim/actions/workflows/ci.yml/badge.svg)](https://github.com/billjamesevans/pytrim/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+![PyTrim](https://img.shields.io/badge/pytrim-passing-brightgreen)
 
 Cut Python startup drag and dependency bloat before it reaches production.
 
 PyTrim is a zero-dependency analyzer for finding project optimization work that usually hides in plain sight:
 
+- entrypoint startup drag
 - slow third-party imports
 - likely unused dependencies
 - possible undeclared imports
 - opt-in large installed package checks
 - top-level imports that look safe to move into deferred code paths
 - CI thresholds for dependency and import hygiene
+- uv.lock sync status and package explanations
 
 PyTrim never edits your code. It produces reviewable reports and CI-friendly checks so teams can make deliberate changes.
 
@@ -47,11 +50,15 @@ PYTHONPATH=src python3 -m pytrim analyze /path/to/your/project
 pytrim analyze examples/sample_project
 pytrim analyze examples/sample_project --json -o pytrim-report.json
 pytrim analyze examples/sample_project --jobs auto --package-sizes
+pytrim analyze examples/sample_project --entrypoint "python app.py"
+pytrim analyze examples/sample_project --uv
 pytrim check examples/sample_project --max-unused 0
 pytrim check examples/sample_project --import-time --json --max-import-ms 150
+pytrim sync-check examples/sample_project/uv.lock
+pytrim explain-package pandas examples/sample_project --uv
 ```
 
-`analyze` writes a human-readable Markdown report by default. `check` prints a compact status report and exits nonzero when a configured threshold is exceeded.
+`analyze` writes a shareable "wow" report by default. Use `--report detailed` for the longer audit report. `check` prints a compact status report and exits nonzero when a configured threshold is exceeded.
 
 ## Python API
 
@@ -65,6 +72,7 @@ report = analyze_project(
     jobs="auto",
     run_import_timing=False,
     collect_package_sizes=False,
+    entrypoint="python app.py",
 )
 print(report.unused_dependencies)
 ```
@@ -99,6 +107,18 @@ python -X importtime -c "import pandas"
 
 This keeps imports out of the analyzer process, but the imported library can still run import-time side effects in the child process. Leave import timing disabled when you want a purely static scan.
 
+### Entrypoint startup timing
+
+Entrypoint mode measures the command users actually wait on:
+
+```bash
+pytrim analyze . --entrypoint "python app.py"
+pytrim analyze . --entrypoint "uvicorn app:app"
+pytrim analyze . --entrypoint "python -m my_cli"
+```
+
+PyTrim runs the command with Python import profiling enabled and `shell=False`, then folds the parsed startup import costs into the report. Server-style commands may time out by design; PyTrim still reports import data captured before the timeout.
+
 ### Lazy-import candidates
 
 PyTrim looks for imports that are defined at module load but only used inside deferred function or method bodies.
@@ -130,6 +150,7 @@ pytrim analyze [path] [options]
 
 Options:
   --json                         Emit JSON instead of Markdown
+  --report wow|detailed           Human report style, default wow
   --output FILE, -o FILE          Write report to a file
   --import-time                   Run subprocess import timing checks
   --no-import-time                Skip subprocess import timing checks, default
@@ -138,6 +159,9 @@ Options:
   --package-sizes                 Collect installed package sizes
   --no-package-sizes              Skip installed package size checks, default
   --jobs N|auto                   Static scan workers, default auto
+  --entrypoint COMMAND            Measure startup for a real entrypoint command
+  --entrypoint-timeout SECONDS    Timeout for entrypoint measurement, default 10
+  --uv                            Include uv.lock status
   --max-files N                   Max Python files to scan, default 5000
   --exclude DIR                   Extra directory name to exclude; repeatable
 ```
@@ -159,9 +183,61 @@ Options:
   --package-sizes                 Collect installed package sizes
   --no-package-sizes              Skip installed package size checks, default
   --jobs N|auto                   Static scan workers, default auto
+  --entrypoint COMMAND            Measure startup for a real entrypoint command
+  --entrypoint-timeout SECONDS    Timeout for entrypoint measurement, default 10
+  --uv                            Include uv.lock status
   --max-files N                   Max Python files to scan, default 5000
   --exclude DIR                   Extra directory name to exclude; repeatable
 ```
+
+```bash
+pytrim sync-check [uv.lock] [options]
+
+Options:
+  --json                         Emit machine-readable sync results
+```
+
+```bash
+pytrim explain-package PACKAGE [path] [options]
+
+Options:
+  --uv                           Include uv.lock status
+  --json                         Emit machine-readable package explanation
+```
+
+## CI
+
+Add PyTrim to GitHub Actions as a dependency hygiene gate:
+
+```yaml
+- name: Check Python dependency health
+  run: pytrim check . --max-unused 0 --max-undeclared 0 --max-package-mb 100
+```
+
+For projects that use uv:
+
+```yaml
+- name: Check uv lock sync
+  run: pytrim sync-check uv.lock
+```
+
+Badge for project docs:
+
+```markdown
+![PyTrim](https://img.shields.io/badge/pytrim-passing-brightgreen)
+```
+
+## uv
+
+PyTrim understands the common `pyproject.toml` + `uv.lock` workflow:
+
+```bash
+pytrim analyze --uv
+pytrim sync-check uv.lock
+pytrim explain-package pandas --uv
+```
+
+`sync-check` verifies that direct dependencies declared in `pyproject.toml` are represented in `uv.lock`. `explain-package` shows whether a package is declared, which import names map to it, whether it is installed locally, and whether uv has locked it.
 
 ## Performance
 
@@ -204,6 +280,7 @@ python3 -m venv .venv
 - Dependency names do not always match import names.
 - Optional dependencies may be marked unused if their optional code path is not statically imported.
 - Opt-in import timing imports third-party packages in a subprocess, which can still trigger child-process side effects.
+- Entrypoint mode runs your command in a subprocess; use it for commands that are safe to execute locally.
 - Package size checks are opt-in and only work for dependencies installed in the current environment.
 
 ## Roadmap
@@ -211,8 +288,8 @@ python3 -m venv .venv
 The next serious versions should add:
 
 1. `pytrim fix --lazy-imports` with AST-safe rewrites and backups.
-2. Lockfile awareness for uv, Poetry, PDM, and pip-tools.
-3. Per-entrypoint startup benchmarks.
+2. Lockfile awareness for Poetry, PDM, and pip-tools.
+3. Richer per-entrypoint default-path waste attribution.
 4. Docker/image-size analysis.
 5. Richer package-name/import-name mapping.
 6. Profiler integration for hot-loop acceleration suggestions.

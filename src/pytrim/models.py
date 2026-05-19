@@ -70,6 +70,26 @@ class PackageSize:
     reason: str | None = None
 
 
+@dataclass(frozen=True)
+class EntrypointTiming:
+    command: str
+    status: str
+    elapsed_ms: float | None
+    returncode: int | None
+    import_timings: list[ImportTiming] = field(default_factory=list)
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class UvLockSummary:
+    lock_path: str
+    status: str
+    package_count: int
+    locked_direct_dependencies: tuple[str, ...] = ()
+    missing_direct_dependencies: tuple[str, ...] = ()
+    reason: str | None = None
+
+
 @dataclass
 class AnalysisReport:
     project_path: str
@@ -83,6 +103,8 @@ class AnalysisReport:
     lazy_import_candidates: list[LazyImportCandidate] = field(default_factory=list)
     import_timings: list[ImportTiming] = field(default_factory=list)
     package_sizes: list[PackageSize] = field(default_factory=list)
+    entrypoint: EntrypointTiming | None = None
+    uv_lock: UvLockSummary | None = None
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:

@@ -6,25 +6,29 @@ from .models import (
     AnalysisReport,
     DeclaredDependency,
     DependencyUsage,
+    EntrypointTiming,
     ImportRecord,
     ImportTiming,
     LazyImportCandidate,
     PackageSize,
     PythonFileScan,
+    UvLockSummary,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "AnalysisContext",
     "AnalysisReport",
     "DeclaredDependency",
     "DependencyUsage",
+    "EntrypointTiming",
     "ImportRecord",
     "ImportTiming",
     "LazyImportCandidate",
     "PackageSize",
     "PythonFileScan",
+    "UvLockSummary",
     "__version__",
     "analyze_project",
 ]

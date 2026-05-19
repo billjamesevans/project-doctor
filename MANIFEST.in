@@ -1,5 +1,5 @@
 include LICENSE
 include README.md
 include scripts/benchmark.py
-recursive-include examples *.py *.toml
+recursive-include examples *.py *.toml *.lock
 recursive-include tests *.py

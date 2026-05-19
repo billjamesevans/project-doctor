@@ -10,6 +10,77 @@ def render_json(report: AnalysisReport, indent: int = 2) -> str:
     return json.dumps(report.to_dict(), indent=indent, sort_keys=True)
 
 
+def render_wow_report(report: AnalysisReport) -> str:
+    lines: list[str] = ["# PyTrim Report", ""]
+    lines.append(f"Project: `{report.project_path}`")
+    lines.append(f"Python files scanned: {report.python_files_scanned}")
+    if report.entrypoint:
+        elapsed = _duration(report.entrypoint.elapsed_ms)
+        suffix = f" ({report.entrypoint.status})" if report.entrypoint.status != "ok" else ""
+        lines.append(f"Entrypoint startup: {elapsed}{suffix}")
+        movable_drag = _movable_entrypoint_drag(report)
+        if movable_drag is not None:
+            lines.append(f"Potential default-path import drag: {_duration(movable_drag)}")
+        lines.append(f"Entrypoint: `{report.entrypoint.command}`")
+    if report.uv_lock:
+        lines.append(f"uv.lock: {report.uv_lock.status} ({report.uv_lock.package_count} packages)")
+    lines.append("")
+
+    lines.append("## Startup drag")
+    startup_drag = _startup_drag(report)
+    if startup_drag:
+        for timing in startup_drag[:8]:
+            lines.append(f"- {timing.module}: {_ms(timing.cumulative_ms)}")
+    else:
+        lines.append("- No import timing data collected. Use `--import-time` or `--entrypoint`.")
+    lines.append("")
+
+    lines.append("## Likely unused dependencies")
+    if report.unused_dependencies:
+        for dependency in report.unused_dependencies[:12]:
+            lines.append(f"- {dependency.dependency}")
+    else:
+        lines.append("- None found.")
+    lines.append("")
+
+    lines.append("## Possible undeclared imports")
+    if report.undeclared_imports:
+        for name in report.undeclared_imports[:12]:
+            lines.append(f"- {name} imported but not declared")
+    else:
+        lines.append("- None found.")
+    lines.append("")
+
+    lines.append("## Largest installed packages")
+    largest = [item for item in report.package_sizes if item.status == "ok" and item.size_mb is not None]
+    if largest:
+        for package in sorted(largest, key=lambda size: -1 if size.size_mb is None else -size.size_mb)[:8]:
+            lines.append(f"- {package.distribution}: {_mb(package.size_mb)}")
+    else:
+        lines.append("- Package sizes not collected. Use `--package-sizes`.")
+    lines.append("")
+
+    lines.append("## Suggested quick wins")
+    quick_wins = _quick_wins(report)
+    if quick_wins:
+        for index, action in enumerate(quick_wins[:8], start=1):
+            lines.append(f"{index}. {action}")
+    else:
+        lines.append("1. No obvious high-impact cleanup was found in this pass.")
+    lines.append("")
+
+    lines.append("## CI copy/paste")
+    lines.append("")
+    lines.append("```yaml")
+    lines.append("- name: Check Python dependency health")
+    lines.append("  run: pytrim check . --max-unused 0 --max-undeclared 0 --max-package-mb 100")
+    lines.append("```")
+    lines.append("")
+    lines.append("![PyTrim](https://img.shields.io/badge/pytrim-passing-brightgreen)")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
 def render_markdown(report: AnalysisReport) -> str:
     lines: list[str] = []
     lines.append("# PyTrim Optimization Report")
@@ -173,6 +244,57 @@ def _best_actions(report: AnalysisReport) -> list[str]:
     return actions[:6]
 
 
+def _startup_drag(report: AnalysisReport) -> list[ImportTiming]:
+    timings = report.import_timings
+    if not timings and report.entrypoint:
+        third_party = set(report.third_party_imports)
+        timings = [
+            item
+            for item in report.entrypoint.import_timings
+            if item.module in third_party or item.module.split(".", 1)[0] in third_party
+        ]
+    return sorted(
+        [item for item in timings if item.status == "ok" and item.cumulative_ms is not None],
+        key=lambda item: (-1 if item.cumulative_ms is None else -item.cumulative_ms, item.module),
+    )
+
+
+def _movable_entrypoint_drag(report: AnalysisReport) -> float | None:
+    if not report.entrypoint:
+        return None
+    movable_modules = {candidate.module for candidate in report.lazy_import_candidates}
+    if not movable_modules:
+        return None
+    total = 0.0
+    for timing in report.entrypoint.import_timings:
+        if timing.status != "ok" or timing.cumulative_ms is None:
+            continue
+        if timing.module in movable_modules or timing.module.split(".", 1)[0] in movable_modules:
+            total += timing.cumulative_ms
+    if total <= 0:
+        return None
+    if report.entrypoint.elapsed_ms is not None:
+        total = min(total, report.entrypoint.elapsed_ms)
+    return round(total, 3)
+
+
+def _quick_wins(report: AnalysisReport) -> list[str]:
+    actions: list[str] = []
+    for candidate in report.lazy_import_candidates[:3]:
+        actions.append(
+            f"Move `{candidate.module}` import at `{candidate.file}:{candidate.line}` "
+            "inside the deferred function that uses it."
+        )
+    for dependency in report.unused_dependencies[:3]:
+        actions.append(f"Remove `{dependency.dependency}` if it is no longer used by active code paths.")
+    for name in report.undeclared_imports[:3]:
+        actions.append(f"Add `{name}` to `pyproject.toml`.")
+    if report.uv_lock and report.uv_lock.missing_direct_dependencies:
+        missing = ", ".join(f"`{name}`" for name in report.uv_lock.missing_direct_dependencies[:3])
+        actions.append(f"Run `uv lock` or `uv sync` so uv.lock includes {missing}.")
+    return actions
+
+
 def _timing_table(timings: Iterable[ImportTiming]) -> list[str]:
     lines = ["| Module | Cumulative import time | Self time |", "|---|---:|---:|"]
     for item in timings:
@@ -206,3 +328,17 @@ def _ms(value: float | None) -> str:
     if value is None:
         return "—"
     return f"{value:g}ms"
+
+
+def _mb(value: float | None) -> str:
+    if value is None:
+        return "—"
+    return f"{value:g}MB"
+
+
+def _duration(value_ms: float | None) -> str:
+    if value_ms is None:
+        return "unknown"
+    if value_ms >= 1000:
+        return f"{value_ms / 1000:g}s"
+    return f"{value_ms:g}ms"

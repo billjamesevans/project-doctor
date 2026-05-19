@@ -14,6 +14,34 @@ _MODULE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]
 _IMPORT_MODULE_CODE = "import importlib, sys; importlib.import_module(sys.argv[1])"
 
 
+def parse_importtime_output(stderr: str) -> list[ImportTiming]:
+    rows: dict[str, tuple[int, int]] = {}
+    for line in stderr.splitlines():
+        match = _IMPORTTIME_RE.match(line.strip())
+        if not match:
+            continue
+        self_us = int(match.group(1))
+        cumulative_us = int(match.group(2))
+        imported_name = match.group(3).strip()
+        previous = rows.get(imported_name)
+        if previous is None or cumulative_us > previous[1]:
+            rows[imported_name] = (self_us, cumulative_us)
+
+    timings = [
+        ImportTiming(
+            module=module,
+            self_ms=round(self_us / 1000, 3),
+            cumulative_ms=round(cumulative_us / 1000, 3),
+            status="ok",
+        )
+        for module, (self_us, cumulative_us) in rows.items()
+    ]
+    return sorted(
+        timings,
+        key=lambda item: (-1 if item.cumulative_ms is None else -item.cumulative_ms, item.module),
+    )
+
+
 def measure_import_time(module: str, timeout_seconds: float, cwd: Path | None = None) -> ImportTiming:
     """Measure a single module import in a subprocess using Python's -X importtime.
 
@@ -66,18 +94,8 @@ def _measure_import_time(module: str, timeout_seconds: float, cwd: Path) -> Impo
             reason=str(exc),
         )
 
-    target_row: tuple[int, int] | None = None
-    fallback_rows: list[tuple[str, int, int]] = []
-    for line in completed.stderr.splitlines():
-        match = _IMPORTTIME_RE.match(line.strip())
-        if not match:
-            continue
-        self_us = int(match.group(1))
-        cumulative_us = int(match.group(2))
-        imported_name = match.group(3).strip()
-        fallback_rows.append((imported_name, self_us, cumulative_us))
-        if imported_name == module:
-            target_row = (self_us, cumulative_us)
+    parsed_timings = parse_importtime_output(completed.stderr)
+    target = next((item for item in parsed_timings if item.module == module), None)
 
     if completed.returncode != 0:
         reason = completed.stderr.strip().splitlines()[-1] if completed.stderr.strip() else "Import failed."
@@ -89,15 +107,18 @@ def _measure_import_time(module: str, timeout_seconds: float, cwd: Path) -> Impo
             reason=reason,
         )
 
-    if target_row is None:
+    if target is None:
         # Some imports alias themselves or emit rows with leading package names. Use the
         # largest cumulative row that starts with the requested top-level module.
-        related = [row for row in fallback_rows if row[0] == module or row[0].startswith(module + ".")]
+        related = [
+            item
+            for item in parsed_timings
+            if item.module == module or item.module.startswith(module + ".")
+        ]
         if related:
-            _, self_us, cumulative_us = max(related, key=lambda item: item[2])
-            target_row = (self_us, cumulative_us)
+            target = max(related, key=lambda item: -1 if item.cumulative_ms is None else item.cumulative_ms)
 
-    if target_row is None:
+    if target is None:
         return ImportTiming(
             module=module,
             self_ms=None,
@@ -106,11 +127,10 @@ def _measure_import_time(module: str, timeout_seconds: float, cwd: Path) -> Impo
             reason="Could not parse import timing output.",
         )
 
-    self_us, cumulative_us = target_row
     return ImportTiming(
         module=module,
-        self_ms=round(self_us / 1000, 3),
-        cumulative_ms=round(cumulative_us / 1000, 3),
+        self_ms=target.self_ms,
+        cumulative_ms=target.cumulative_ms,
         status="ok",
     )
 

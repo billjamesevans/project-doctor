@@ -6,10 +6,12 @@ from pathlib import Path
 
 from .context import AnalysisContext
 from .dependencies import dependency_usage_status, load_declared_dependencies, undeclared_imports
+from .entrypoint import measure_entrypoint_startup
 from .import_timing import measure_import_times
-from .models import AnalysisReport, ImportTiming, LazyImportCandidate, PackageSize, PythonFileScan
+from .models import AnalysisReport, EntrypointTiming, ImportTiming, LazyImportCandidate, PackageSize, PythonFileScan
 from .static_scan import ScanJobs, infer_local_import_roots, iter_lazy_import_candidates, iter_scan_python_files
 from .utils import is_stdlib_module, iter_python_files, top_import_name
+from .uv import sync_check_uv
 
 
 @dataclass
@@ -30,6 +32,9 @@ def analyze_project(
     collect_package_sizes: bool = False,
     context: AnalysisContext | None = None,
     jobs: ScanJobs = "auto",
+    entrypoint: str | None = None,
+    entrypoint_timeout: float = 10.0,
+    use_uv: bool = False,
 ) -> AnalysisReport:
     project_root = Path(path).expanduser().resolve()
     if not project_root.exists():
@@ -70,6 +75,16 @@ def analyze_project(
     elif not run_import_timing:
         warnings.append("Import timing disabled by default. Use --import-time to enable subprocess timing checks.")
 
+    entrypoint_timing: EntrypointTiming | None = None
+    if entrypoint is not None:
+        entrypoint_timing = measure_entrypoint_startup(
+            entrypoint,
+            cwd=project_root,
+            timeout_seconds=entrypoint_timeout,
+        )
+        if entrypoint_timing.status != "ok" and entrypoint_timing.reason:
+            warnings.append(f"Entrypoint timing {entrypoint_timing.status}: {entrypoint_timing.reason}")
+
     sizes: list[PackageSize] = []
     if collect_package_sizes:
         sizes = [analysis_context.package_size(dep.name) for dep in declared_dependencies]
@@ -78,7 +93,7 @@ def analyze_project(
 
     heavy_by_time = {
         item.module
-        for item in timings
+        for item in [*timings, *(entrypoint_timing.import_timings if entrypoint_timing else [])]
         if item.status == "ok" and item.cumulative_ms is not None and item.cumulative_ms >= 150
     }
     heavy_by_size = _heavy_import_names_from_sizes(sizes, analysis_context)
@@ -87,6 +102,10 @@ def analyze_project(
         for item in summary.lazy_import_candidates
         if item.module in third_party_set
     ]
+
+    uv_lock = sync_check_uv(project_root / "uv.lock") if use_uv else None
+    if uv_lock is not None and uv_lock.status != "ok" and uv_lock.reason:
+        warnings.append(f"uv.lock {uv_lock.status}: {uv_lock.reason}")
 
     return AnalysisReport(
         project_path=str(project_root),
@@ -107,6 +126,8 @@ def analyze_project(
                 item.distribution.lower(),
             ),
         ),
+        entrypoint=entrypoint_timing,
+        uv_lock=uv_lock,
         warnings=warnings,
     )
 
