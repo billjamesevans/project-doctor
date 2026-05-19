@@ -23,16 +23,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"pytrim {__version__}")
 
     subparsers = parser.add_subparsers(dest="command")
+    doctor = subparsers.add_parser("doctor", help="Run the default project health report.")
+    _add_analysis_options(doctor)
+    _add_report_options(doctor)
+
     analyze = subparsers.add_parser("analyze", help="Analyze a Python project.")
     _add_analysis_options(analyze)
-    analyze.add_argument("--json", action="store_true", help="Emit JSON instead of Markdown.")
-    analyze.add_argument(
-        "--report",
-        choices=("wow", "detailed"),
-        default="wow",
-        help="Human report style. Default: wow.",
-    )
-    analyze.add_argument("--output", "-o", help="Write the report to a file instead of stdout.")
+    _add_report_options(analyze)
 
     check = subparsers.add_parser("check", help="Run CI-friendly optimization checks against a Python project.")
     _add_analysis_options(check)
@@ -58,6 +55,17 @@ def build_parser() -> argparse.ArgumentParser:
     explain.add_argument("--json", action="store_true", help="Emit machine-readable package explanation.")
 
     return parser
+
+
+def _add_report_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--json", action="store_true", help="Emit JSON instead of Markdown.")
+    parser.add_argument(
+        "--report",
+        choices=("wow", "detailed"),
+        default="wow",
+        help="Human report style. Default: wow.",
+    )
+    parser.add_argument("--output", "-o", help="Write the report to a file instead of stdout.")
 
 
 def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
@@ -139,14 +147,14 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
 
-    if args.command in {"analyze", "check"}:
+    if args.command in {"analyze", "check", "doctor"}:
         try:
             report = _run_analysis(args)
         except Exception as exc:  # noqa: BLE001 - CLI should return a clear user-facing error.
             print(f"pytrim: {exc}", file=sys.stderr)
             return 2
 
-    if args.command == "analyze":
+    if args.command in {"analyze", "doctor"}:
         if args.json:
             rendered = render_json(report)
         elif args.report == "detailed":

@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 ![PyTrim](https://img.shields.io/badge/pytrim-passing-brightgreen)
 
-Cut Python startup drag and dependency bloat before it reaches production.
+A local-first health checker for Python imports, dependencies, startup time, and package bloat.
 
 PyTrim is a zero-dependency analyzer for finding project optimization work that usually hides in plain sight:
 
@@ -24,7 +24,9 @@ PyTrim never edits your code. It produces reviewable reports and CI-friendly che
 
 PyTrim is local-first and safe by default. Static scans parse source files with Python's `ast` module and do not import your project code. Optional import timing must be enabled with `--import-time`; it imports third-party modules in child processes, so leave it off when reviewing sensitive projects or code with import-time side effects. Installed package size checks are also opt-in with `--package-sizes` because they walk installed distribution metadata.
 
-## Install locally
+## Install
+
+Current reliable install path:
 
 From this folder:
 
@@ -44,9 +46,17 @@ Or without installing:
 PYTHONPATH=src python3 -m pytrim analyze /path/to/your/project
 ```
 
+Intended package install path once name/package ownership is settled:
+
+```bash
+pip install pytrim
+uv tool install pytrim
+```
+
 ## Quick examples
 
 ```bash
+pytrim doctor
 pytrim analyze examples/sample_project
 pytrim analyze examples/sample_project --json -o pytrim-report.json
 pytrim analyze examples/sample_project --jobs auto --package-sizes
@@ -59,6 +69,38 @@ pytrim explain-package pandas examples/sample_project --uv
 ```
 
 `analyze` writes a shareable "wow" report by default. Use `--report detailed` for the longer audit report. `check` prints a compact status report and exits nonzero when a configured threshold is exceeded.
+
+## Example report
+
+```text
+PyTrim Report
+
+Startup time: 1.42s
+Potential avoidable import cost: 630ms
+
+Top startup contributors:
+- pandas: 312ms
+- boto3: 205ms
+- matplotlib: 113ms
+
+Likely unused dependencies:
+- openpyxl
+- beautifulsoup4
+- python-dotenv
+
+Possible undeclared imports:
+- requests imported but not declared
+
+Largest installed packages:
+- torch: 742MB
+- pandas: 78MB
+- botocore: 71MB
+
+Suggested quick wins:
+1. Move `pandas` import at `reports.py:3` inside the deferred function that uses it.
+2. Remove `openpyxl` if it is no longer used by active code paths.
+3. Add `requests` to `pyproject.toml`.
+```
 
 ## Python API
 
@@ -146,6 +188,12 @@ That kind of change can reduce startup time for CLIs, Lambdas, Flask/FastAPI app
 ## CLI
 
 ```bash
+pytrim doctor [path] [options]
+
+Runs the default project health report. It is an alias for `pytrim analyze .` with the same analysis options.
+```
+
+```bash
 pytrim analyze [path] [options]
 
 Options:
@@ -212,6 +260,25 @@ Add PyTrim to GitHub Actions as a dependency hygiene gate:
 ```yaml
 - name: Check Python dependency health
   run: pytrim check . --max-unused 0 --max-undeclared 0 --max-package-mb 100
+```
+
+Intended full workflow after first package release and name/package ownership confirmation:
+
+```yaml
+name: pytrim
+
+on: [push, pull_request]
+
+jobs:
+  pytrim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytrim
+      - run: pytrim check . --max-unused 0 --max-undeclared 0
 ```
 
 For projects that use uv:
@@ -287,9 +354,9 @@ python3 -m venv .venv
 
 The next serious versions should add:
 
-1. `pytrim fix --lazy-imports` with AST-safe rewrites and backups.
-2. Lockfile awareness for Poetry, PDM, and pip-tools.
-3. Richer per-entrypoint default-path waste attribution.
+1. Deeper entrypoint startup benchmarks with clearer default-path waste attribution.
+2. `pytrim fix --lazy-imports` with AST-safe rewrites and backups.
+3. Lockfile awareness for Poetry, PDM, and pip-tools.
 4. Docker/image-size analysis.
 5. Richer package-name/import-name mapping.
 6. Profiler integration for hot-loop acceleration suggestions.

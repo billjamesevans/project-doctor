@@ -153,11 +153,47 @@ dependencies = ["definitely-not-installed-pytrim-test>=1"]
     assert "Suggested quick wins" in captured.out
 
 
+def test_doctor_command_is_analyze_alias(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        """
+[project]
+name = "demo"
+version = "0.1.0"
+dependencies = []
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "app.py").write_text("print('ok')\n", encoding="utf-8")
+
+    status = main(["doctor", str(tmp_path), "--no-import-time"])
+
+    captured = capsys.readouterr()
+    assert status == 0
+    assert captured.out.startswith("# PyTrim Report")
+    assert "Python files scanned: 1" in captured.out
+
+
 def test_readme_has_ci_copy_paste_and_badge() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
     assert "![PyTrim](https://img.shields.io/badge/pytrim-passing-brightgreen)" in readme
     assert "pytrim check . --max-unused 0 --max-undeclared 0 --max-package-mb 100" in readme
+    assert "name: pytrim" in readme
+    assert "actions/checkout@v4" in readme
+
+
+def test_readme_has_sample_report_tagline_and_install_positioning() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "A local-first health checker for Python imports, dependencies, startup time, and package bloat." in readme
+    assert "## Example report" in readme
+    assert "Startup time: 1.42s" in readme
+    assert "Potential avoidable import cost: 630ms" in readme
+    assert "Top startup contributors:" in readme
+    assert "pytrim doctor" in readme
+    assert "uv tool install pytrim" in readme
+    assert "name/package ownership is settled" in readme
+    assert "1. Deeper entrypoint startup benchmarks" in readme
 
 
 def test_uv_sync_check_reports_missing_direct_dependencies(tmp_path: Path) -> None:
