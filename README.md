@@ -11,7 +11,7 @@ PyTrim is a zero-dependency analyzer for finding project optimization work that 
 - slow third-party imports
 - likely unused dependencies
 - possible undeclared imports
-- large installed packages
+- opt-in large installed package checks
 - top-level imports that look safe to move into deferred code paths
 - CI thresholds for dependency and import hygiene
 
@@ -19,7 +19,7 @@ PyTrim never edits your code. It produces reviewable reports and CI-friendly che
 
 ## Security and privacy
 
-PyTrim is local-first and safe by default. Static scans parse source files with Python's `ast` module and do not import your project code. Optional import timing must be enabled with `--import-time`; it imports third-party modules in child processes, so leave it off when reviewing sensitive projects or code with import-time side effects.
+PyTrim is local-first and safe by default. Static scans parse source files with Python's `ast` module and do not import your project code. Optional import timing must be enabled with `--import-time`; it imports third-party modules in child processes, so leave it off when reviewing sensitive projects or code with import-time side effects. Installed package size checks are also opt-in with `--package-sizes` because they walk installed distribution metadata.
 
 ## Install locally
 
@@ -46,6 +46,7 @@ PYTHONPATH=src python3 -m pytrim analyze /path/to/your/project
 ```bash
 pytrim analyze examples/sample_project
 pytrim analyze examples/sample_project --json -o pytrim-report.json
+pytrim analyze examples/sample_project --jobs auto --package-sizes
 pytrim check examples/sample_project --max-unused 0
 pytrim check examples/sample_project --import-time --json --max-import-ms 150
 ```
@@ -55,13 +56,20 @@ pytrim check examples/sample_project --import-time --json --max-import-ms 150
 ## Python API
 
 ```python
-from pytrim import analyze_project
+from pytrim import AnalysisContext, analyze_project
 
-report = analyze_project("examples/sample_project", run_import_timing=False)
+context = AnalysisContext.from_environment()
+report = analyze_project(
+    "examples/sample_project",
+    context=context,
+    jobs="auto",
+    run_import_timing=False,
+    collect_package_sizes=False,
+)
 print(report.unused_dependencies)
 ```
 
-The returned `AnalysisReport` and nested report objects are dataclasses and can be converted to dictionaries with `report.to_dict()`.
+The returned `AnalysisReport` and nested report objects are dataclasses and can be converted to dictionaries with `report.to_dict()`. Reuse `AnalysisContext` when analyzing multiple projects in one process; it keeps installed package metadata and package size estimates cached.
 
 ## What PyTrim checks
 
@@ -127,6 +135,9 @@ Options:
   --no-import-time                Skip subprocess import timing checks, default
   --import-time-limit N           Max third-party modules to time, default 20
   --import-time-timeout SECONDS   Timeout per import, default 10
+  --package-sizes                 Collect installed package sizes
+  --no-package-sizes              Skip installed package size checks, default
+  --jobs N|auto                   Static scan workers, default auto
   --max-files N                   Max Python files to scan, default 5000
   --exclude DIR                   Extra directory name to exclude; repeatable
 ```
@@ -140,13 +151,37 @@ Options:
   --max-undeclared N              Max possible undeclared imports, default 0
   --max-lazy-imports N            Max lazy-import candidates
   --max-import-ms N               Max cumulative import time for any measured module
-  --max-package-mb N              Max installed package size for any declared dependency
+  --max-package-mb N              Max installed package size; enables package size checks
   --import-time                   Run subprocess import timing checks
   --no-import-time                Skip subprocess import timing checks, default
   --import-time-limit N           Max third-party modules to time, default 20
   --import-time-timeout SECONDS   Timeout per import, default 10
+  --package-sizes                 Collect installed package sizes
+  --no-package-sizes              Skip installed package size checks, default
+  --jobs N|auto                   Static scan workers, default auto
   --max-files N                   Max Python files to scan, default 5000
   --exclude DIR                   Extra directory name to exclude; repeatable
+```
+
+## Performance
+
+PyTrim keeps the default path fast:
+
+- installed package metadata is indexed once per analysis context
+- package size checks are skipped unless requested or needed by `--max-package-mb`
+- static scans stream into aggregate results instead of retaining every file scan object
+- `--jobs auto` uses serial scanning for small projects and bounded parallel scanning for larger projects
+
+Run the benchmark helper against a synthetic project:
+
+```bash
+PYTHONPATH=src python3 scripts/benchmark.py --files 1000 --runs 5 --jobs auto
+```
+
+Or benchmark a real project:
+
+```bash
+PYTHONPATH=src python3 scripts/benchmark.py /path/to/project --runs 5 --jobs auto
 ```
 
 ## Development
@@ -157,8 +192,9 @@ python3 -m venv .venv
 .venv/bin/python -m pytest
 .venv/bin/python -m ruff check .
 .venv/bin/python -m mypy src/pytrim tests
-.venv/bin/python -m bandit -r src examples -q
+.venv/bin/python -m bandit -r src examples scripts -q
 .venv/bin/python -m pip_audit
+.venv/bin/python scripts/benchmark.py --files 200 --runs 2
 .venv/bin/python -m build
 ```
 
@@ -168,7 +204,7 @@ python3 -m venv .venv
 - Dependency names do not always match import names.
 - Optional dependencies may be marked unused if their optional code path is not statically imported.
 - Opt-in import timing imports third-party packages in a subprocess, which can still trigger child-process side effects.
-- Package size checks only work for dependencies installed in the current environment.
+- Package size checks are opt-in and only work for dependencies installed in the current environment.
 
 ## Roadmap
 

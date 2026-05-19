@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import importlib.metadata as metadata
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,59 @@ except ModuleNotFoundError:  # pragma: no cover - package requires py3.11+
 
 from .models import DeclaredDependency, DependencyUsage, PackageSize
 from .utils import canonicalize_name, import_name_guess, parse_requirement_name
+
+
+@dataclass(frozen=True)
+class InstalledPackageIndex:
+    """Lookup table for installed package metadata.
+
+    `importlib.metadata.packages_distributions()` returns import-name -> distribution-name.
+    PyTrim needs both directions, so build the reverse index once per analysis context
+    instead of scanning the full mapping for every declared dependency.
+    """
+
+    import_to_distributions: dict[str, tuple[str, ...]]
+    distribution_to_imports: dict[str, tuple[str, ...]]
+
+    @classmethod
+    def from_environment(cls) -> InstalledPackageIndex:
+        try:
+            mapping = metadata.packages_distributions()
+        except Exception:  # pragma: no cover - extremely defensive.
+            return cls.from_import_to_distributions({})
+        return cls.from_import_to_distributions(mapping)
+
+    @classmethod
+    def from_import_to_distributions(
+        cls,
+        mapping: Mapping[str, Iterable[str]],
+    ) -> InstalledPackageIndex:
+        import_to_distributions: dict[str, tuple[str, ...]] = {}
+        reverse: dict[str, set[str]] = {}
+        for import_name, distributions in mapping.items():
+            normalized_import = str(import_name)
+            distribution_names = tuple(sorted({str(distribution) for distribution in distributions}))
+            import_to_distributions[normalized_import] = distribution_names
+            for distribution in distribution_names:
+                reverse.setdefault(canonicalize_name(distribution), set()).add(normalized_import)
+
+        distribution_to_imports = {
+            distribution: tuple(sorted(import_names))
+            for distribution, import_names in reverse.items()
+        }
+        return cls(
+            import_to_distributions=import_to_distributions,
+            distribution_to_imports=distribution_to_imports,
+        )
+
+    def import_names_for_distribution(self, distribution: str) -> tuple[str, ...]:
+        names = self.distribution_to_imports.get(canonicalize_name(distribution))
+        if names:
+            return names
+        return (import_name_guess(distribution),)
+
+    def providers_for_import(self, import_name: str) -> tuple[str, ...]:
+        return self.import_to_distributions.get(import_name, ())
 
 
 def load_declared_dependencies(project_root: Path) -> tuple[list[DeclaredDependency], list[str]]:
@@ -184,18 +238,20 @@ def _parse_requirement_include(raw: str) -> str | None:
 
 def installed_import_name_map() -> dict[str, tuple[str, ...]]:
     """Return import-name -> distribution-name map using installed package metadata."""
-    try:
-        mapping = metadata.packages_distributions()
-    except Exception:  # pragma: no cover - extremely defensive.
-        return {}
-    return {name: tuple(sorted(distributions)) for name, distributions in mapping.items()}
+    return InstalledPackageIndex.from_environment().import_to_distributions
 
 
-def distribution_import_names(distribution: str, import_to_dist: dict[str, tuple[str, ...]]) -> tuple[str, ...]:
+def distribution_import_names(
+    distribution: str,
+    package_index: InstalledPackageIndex | Mapping[str, tuple[str, ...]],
+) -> tuple[str, ...]:
+    if isinstance(package_index, InstalledPackageIndex):
+        return package_index.import_names_for_distribution(distribution)
+
     canonical_dist = canonicalize_name(distribution)
     names = [
         import_name
-        for import_name, distributions in import_to_dist.items()
+        for import_name, distributions in package_index.items()
         if any(canonicalize_name(dist) == canonical_dist for dist in distributions)
     ]
     if names:
@@ -206,11 +262,11 @@ def distribution_import_names(distribution: str, import_to_dist: dict[str, tuple
 def dependency_usage_status(
     declared_dependencies: Iterable[DeclaredDependency],
     all_imports: set[str],
-    import_to_dist: dict[str, tuple[str, ...]],
+    package_index: InstalledPackageIndex | Mapping[str, tuple[str, ...]],
 ) -> list[DependencyUsage]:
     usage: list[DependencyUsage] = []
     for dep in declared_dependencies:
-        import_names = distribution_import_names(dep.name, import_to_dist)
+        import_names = distribution_import_names(dep.name, package_index)
         used_names = tuple(sorted(set(import_names) & all_imports))
         if used_names:
             usage.append(
@@ -243,12 +299,15 @@ def dependency_usage_status(
 def undeclared_imports(
     third_party_imports: Iterable[str],
     declared_dependencies: Iterable[DeclaredDependency],
-    import_to_dist: dict[str, tuple[str, ...]],
+    package_index: InstalledPackageIndex | Mapping[str, tuple[str, ...]],
 ) -> list[str]:
     declared = {dep.normalized_name for dep in declared_dependencies}
     missing: set[str] = set()
     for import_name in third_party_imports:
-        providers = import_to_dist.get(import_name)
+        if isinstance(package_index, InstalledPackageIndex):
+            providers = package_index.providers_for_import(import_name)
+        else:
+            providers = package_index.get(import_name, ())
         if providers:
             if not any(canonicalize_name(provider) in declared for provider in providers):
                 missing.add(import_name)

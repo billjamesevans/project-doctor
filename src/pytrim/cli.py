@@ -72,6 +72,25 @@ def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
         default=10.0,
         help="Timeout per module import in seconds. Default: 10.",
     )
+    size_checks = parser.add_mutually_exclusive_group()
+    size_checks.add_argument(
+        "--package-sizes",
+        dest="package_sizes",
+        action="store_true",
+        default=False,
+        help="Collect installed package sizes for declared dependencies.",
+    )
+    size_checks.add_argument(
+        "--no-package-sizes",
+        dest="package_sizes",
+        action="store_false",
+        help="Skip installed package size checks. This is the default unless --max-package-mb is used.",
+    )
+    parser.add_argument(
+        "--jobs",
+        default="auto",
+        help="Static scan worker count: a positive integer or 'auto'. Default: auto.",
+    )
     parser.add_argument("--max-files", type=int, default=5000, help="Maximum Python files to scan. Default: 5000.")
     parser.add_argument(
         "--exclude",
@@ -117,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run_analysis(args: argparse.Namespace) -> AnalysisReport:
+    collect_package_sizes = bool(args.package_sizes or getattr(args, "max_package_mb", None) is not None)
     return analyze_project(
         args.path,
         run_import_timing=args.import_time,
@@ -124,6 +144,8 @@ def _run_analysis(args: argparse.Namespace) -> AnalysisReport:
         import_time_timeout=args.import_time_timeout,
         max_files=args.max_files,
         excludes=args.exclude,
+        collect_package_sizes=collect_package_sizes,
+        jobs=args.jobs,
     )
 
 
@@ -182,6 +204,7 @@ def _render_check_text(report: AnalysisReport, failures: list[str]) -> str:
     lines.append(f"- Possible undeclared imports: {len(report.undeclared_imports)}")
     lines.append(f"- Lazy-import candidates: {len(report.lazy_import_candidates)}")
     lines.append(f"- Import timing checks: {len(report.import_timings)}")
+    lines.append(f"- Package size checks: {len(report.package_sizes)}")
 
     if report.warnings:
         lines.append("")
@@ -202,6 +225,7 @@ def _render_check_json(report: AnalysisReport, failures: list[str]) -> str:
             "undeclared_imports": len(report.undeclared_imports),
             "lazy_import_candidates": len(report.lazy_import_candidates),
             "import_timing_checks": len(report.import_timings),
+            "package_size_checks": len(report.package_sizes),
             "warnings": report.warnings,
         },
     }

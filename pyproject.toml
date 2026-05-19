@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pytrim"
-version = "0.2.1"
+version = "0.3.0"
 description = "A zero-dependency Python project optimizer for import cost, dependency bloat, lazy imports, and CI quality gates."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -1,19 +1,22 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from .dependencies import (
-    dependency_usage_status,
-    estimate_distribution_size,
-    installed_import_name_map,
-    load_declared_dependencies,
-    undeclared_imports,
-)
+from .context import AnalysisContext
+from .dependencies import dependency_usage_status, load_declared_dependencies, undeclared_imports
 from .import_timing import measure_import_times
-from .models import AnalysisReport
-from .static_scan import find_lazy_import_candidates, infer_local_import_roots, scan_python_files
+from .models import AnalysisReport, ImportTiming, LazyImportCandidate, PackageSize, PythonFileScan
+from .static_scan import ScanJobs, infer_local_import_roots, iter_lazy_import_candidates, iter_scan_python_files
 from .utils import is_stdlib_module, iter_python_files, top_import_name
+
+
+@dataclass
+class _ScanSummary:
+    warnings: list[str]
+    all_imports: set[str]
+    lazy_import_candidates: list[LazyImportCandidate]
 
 
 def analyze_project(
@@ -24,6 +27,9 @@ def analyze_project(
     import_time_timeout: float = 10.0,
     max_files: int = 5000,
     excludes: Iterable[str] = (),
+    collect_package_sizes: bool = False,
+    context: AnalysisContext | None = None,
+    jobs: ScanJobs = "auto",
 ) -> AnalysisReport:
     project_root = Path(path).expanduser().resolve()
     if not project_root.exists():
@@ -33,16 +39,14 @@ def analyze_project(
 
     declared_dependencies, dep_warnings = load_declared_dependencies(project_root)
     python_files, file_warnings = iter_python_files(project_root, max_files=max_files, extra_excludes=excludes)
-    scans = scan_python_files(python_files, project_root)
+    summary = _collect_scan_summary(
+        iter_scan_python_files(python_files, project_root, jobs=jobs),
+    )
 
-    warnings = [*dep_warnings, *file_warnings]
-    for scan in scans:
-        if scan.syntax_error:
-            warnings.append(f"{scan.file}: {scan.syntax_error}")
-
-    all_imports = sorted({record.module for scan in scans for record in scan.imports})
+    warnings = [*dep_warnings, *file_warnings, *summary.warnings]
+    all_imports = sorted(summary.all_imports)
     local_roots = infer_local_import_roots(project_root, python_files)
-    import_to_dist = installed_import_name_map()
+    analysis_context = context or AnalysisContext.from_environment()
 
     third_party = sorted(
         name
@@ -51,11 +55,12 @@ def analyze_project(
         and top_import_name(name) not in local_roots
         and not name.startswith("__")
     )
+    third_party_set = set(third_party)
 
-    usage = dependency_usage_status(declared_dependencies, set(all_imports), import_to_dist)
-    missing = undeclared_imports(third_party, declared_dependencies, import_to_dist)
+    usage = dependency_usage_status(declared_dependencies, set(all_imports), analysis_context.installed_packages)
+    missing = undeclared_imports(third_party, declared_dependencies, analysis_context.installed_packages)
 
-    timings = []
+    timings: list[ImportTiming] = []
     if run_import_timing and third_party:
         timings = measure_import_times(
             third_party,
@@ -65,21 +70,22 @@ def analyze_project(
     elif not run_import_timing:
         warnings.append("Import timing disabled by default. Use --import-time to enable subprocess timing checks.")
 
-    sizes = [estimate_distribution_size(dep.name) for dep in declared_dependencies]
+    sizes: list[PackageSize] = []
+    if collect_package_sizes:
+        sizes = [analysis_context.package_size(dep.name) for dep in declared_dependencies]
+    else:
+        warnings.append("Package size checks disabled by default. Use --package-sizes to enable installed size checks.")
+
     heavy_by_time = {
         item.module
         for item in timings
         if item.status == "ok" and item.cumulative_ms is not None and item.cumulative_ms >= 150
     }
-    heavy_by_size = {
-        dep.distribution.replace("-", "_")
-        for dep in sizes
-        if dep.status == "ok" and dep.size_mb is not None and dep.size_mb >= 20
-    }
+    heavy_by_size = _heavy_import_names_from_sizes(sizes, analysis_context)
     lazy_candidates = [
-        item
-        for item in find_lazy_import_candidates(scans, heavy_modules=heavy_by_time | heavy_by_size)
-        if item.module in set(third_party)
+        _promote_lazy_candidate(item, heavy_modules=heavy_by_time | heavy_by_size)
+        for item in summary.lazy_import_candidates
+        if item.module in third_party_set
     ]
 
     return AnalysisReport(
@@ -102,4 +108,43 @@ def analyze_project(
             ),
         ),
         warnings=warnings,
+    )
+
+
+def _collect_scan_summary(scans: Iterable[PythonFileScan]) -> _ScanSummary:
+    warnings: list[str] = []
+    all_imports: set[str] = set()
+    lazy_import_candidates: list[LazyImportCandidate] = []
+    for scan in scans:
+        if scan.syntax_error:
+            warnings.append(f"{scan.file}: {scan.syntax_error}")
+        for record in scan.imports:
+            all_imports.add(record.module)
+        lazy_import_candidates.extend(iter_lazy_import_candidates((scan,)))
+    return _ScanSummary(
+        warnings=warnings,
+        all_imports=all_imports,
+        lazy_import_candidates=sorted(
+            lazy_import_candidates,
+            key=lambda item: (item.file, item.line, item.module, item.alias),
+        ),
+    )
+
+
+def _heavy_import_names_from_sizes(sizes: Iterable[PackageSize], context: AnalysisContext) -> set[str]:
+    heavy: set[str] = set()
+    for item in sizes:
+        if item.status != "ok" or item.size_mb is None or item.size_mb < 20:
+            continue
+        heavy.update(context.installed_packages.import_names_for_distribution(item.distribution))
+    return heavy
+
+
+def _promote_lazy_candidate(item: LazyImportCandidate, heavy_modules: set[str]) -> LazyImportCandidate:
+    if item.module not in heavy_modules or item.confidence == "high":
+        return item
+    return replace(
+        item,
+        reason=f"{item.reason} The module also appears costly by import time or installed size.",
+        confidence="high",
     )

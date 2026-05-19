@@ -103,6 +103,8 @@ def render_markdown(report: AnalysisReport) -> str:
     ok_sizes = [item for item in report.package_sizes if item.status == "ok" and item.size_mb is not None]
     if ok_sizes:
         lines.extend(_size_table(ok_sizes[:15]))
+    elif not report.package_sizes:
+        lines.append("Package size checks were not collected. Use `--package-sizes` to enable them.")
     else:
         lines.append("No installed package sizes were available for declared dependencies in this environment.")
     unavailable_sizes = [item for item in report.package_sizes if item.status != "ok"]

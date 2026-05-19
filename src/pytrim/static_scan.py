@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import ast
+import os
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .models import ImportRecord, LazyImportCandidate, PythonFileScan, relpath
 from .utils import top_import_name
+
+_AUTO_PARALLEL_FILE_THRESHOLD = 64
+
+
+ScanJobs = int | str | None
 
 
 @dataclass
@@ -181,16 +188,59 @@ def scan_python_file(path: Path, root: Path) -> PythonFileScan:
     )
 
 
-def scan_python_files(paths: Iterable[Path], root: Path) -> list[PythonFileScan]:
-    return [scan_python_file(path, root) for path in paths]
+def resolve_scan_jobs(jobs: ScanJobs, file_count: int) -> int:
+    if file_count <= 1:
+        return 1
+    if jobs is None:
+        return 1
+
+    if isinstance(jobs, str):
+        if jobs == "auto":
+            if file_count < _AUTO_PARALLEL_FILE_THRESHOLD:
+                return 1
+            return max(1, min(file_count, os.cpu_count() or 1))
+        try:
+            parsed_jobs = int(jobs)
+        except ValueError as exc:
+            raise ValueError("jobs must be a positive integer or 'auto'.") from exc
+        jobs = parsed_jobs
+
+    if jobs < 1:
+        raise ValueError("jobs must be a positive integer or 'auto'.")
+    return min(jobs, file_count)
+
+
+def iter_scan_python_files(paths: Iterable[Path], root: Path, *, jobs: ScanJobs = 1) -> Iterable[PythonFileScan]:
+    path_list = list(paths)
+    worker_count = resolve_scan_jobs(jobs, len(path_list))
+    if worker_count == 1:
+        for path in path_list:
+            yield scan_python_file(path, root)
+        return
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        yield from executor.map(lambda path: scan_python_file(path, root), path_list)
+
+
+def scan_python_files(paths: Iterable[Path], root: Path, *, jobs: ScanJobs = 1) -> list[PythonFileScan]:
+    return list(iter_scan_python_files(paths, root, jobs=jobs))
 
 
 def find_lazy_import_candidates(
     scans: Iterable[PythonFileScan],
     heavy_modules: set[str] | None = None,
 ) -> list[LazyImportCandidate]:
+    return sorted(
+        iter_lazy_import_candidates(scans, heavy_modules=heavy_modules),
+        key=lambda item: (item.file, item.line, item.module, item.alias),
+    )
+
+
+def iter_lazy_import_candidates(
+    scans: Iterable[PythonFileScan],
+    heavy_modules: set[str] | None = None,
+) -> Iterable[LazyImportCandidate]:
     heavy_modules = heavy_modules or set()
-    candidates: list[LazyImportCandidate] = []
 
     for scan in scans:
         import_time_uses = set(scan.import_time_uses)
@@ -208,18 +258,14 @@ def find_lazy_import_candidates(
             if record.module in heavy_modules:
                 reason += " The module also appears costly by import time or installed size."
                 confidence = "high"
-            candidates.append(
-                LazyImportCandidate(
-                    file=record.file,
-                    line=record.line,
-                    module=record.module,
-                    alias=record.alias,
-                    reason=reason,
-                    confidence=confidence,
-                )
+            yield LazyImportCandidate(
+                file=record.file,
+                line=record.line,
+                module=record.module,
+                alias=record.alias,
+                reason=reason,
+                confidence=confidence,
             )
-
-    return sorted(candidates, key=lambda item: (item.file, item.line, item.module, item.alias))
 
 
 def infer_local_import_roots(root: Path, python_files: Iterable[Path]) -> set[str]:
