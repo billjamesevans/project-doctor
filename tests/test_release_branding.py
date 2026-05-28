@@ -10,16 +10,17 @@ def test_distribution_metadata_uses_project_doctor_brand() -> None:
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
     assert data["project"]["name"] == "project-doctor"
-    assert data["project"]["version"] == "0.6.0"
+    assert data["project"]["version"] == "0.6.1"
     assert data["project"]["scripts"] == {"project-doctor": "project_doctor.cli:main"}
     assert data["tool"]["setuptools"]["package-data"] == {"project_doctor": ["py.typed"]}
+    assert data["project"]["urls"]["PyPI"] == "https://pypi.org/project/project-doctor/"
 
 
 def test_public_import_package_is_project_doctor() -> None:
     from project_doctor import __version__, analyze_project
     from project_doctor.analyze import analyze_project as direct_analyze_project
 
-    assert __version__ == "0.6.0"
+    assert __version__ == "0.6.1"
     assert analyze_project is direct_analyze_project
 
 
@@ -34,13 +35,15 @@ def test_project_doctor_module_entrypoint_runs_version() -> None:
     )
 
     assert result.returncode == 0
-    assert result.stdout.strip() == "project-doctor 0.6.0"
+    assert result.stdout.strip() == "project-doctor 0.6.1"
 
 
 def test_readme_uses_project_doctor_install_and_cli_names() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
     assert readme.startswith("# Project Doctor")
+    assert "https://pypi.org/project/project-doctor/" in readme
+    assert "img.shields.io/pypi/v/project-doctor.svg" in readme
     assert "pip install project-doctor" in readme
     assert "uv tool install project-doctor" in readme
     assert "project-doctor doctor" in readme
@@ -52,7 +55,7 @@ def test_release_docs_cover_pypi_publish_path() -> None:
     changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
     release_notes = Path("docs/PYPI_RELEASE.md").read_text(encoding="utf-8")
 
-    assert "## 0.6.0" in changelog
+    assert "## 0.6.1" in changelog
     assert "Project Doctor" in changelog
     assert "python -m build" in release_notes
     assert "python -m twine check dist/*" in release_notes

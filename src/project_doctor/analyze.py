@@ -8,7 +8,15 @@ from .context import AnalysisContext
 from .dependencies import dependency_usage_status, load_declared_dependencies, undeclared_imports
 from .entrypoint import measure_entrypoint_startup
 from .import_timing import measure_import_times
-from .models import AnalysisReport, EntrypointTiming, ImportTiming, LazyImportCandidate, PackageSize, PythonFileScan
+from .models import (
+    AnalysisReport,
+    DeclaredDependency,
+    EntrypointTiming,
+    ImportTiming,
+    LazyImportCandidate,
+    PackageSize,
+    PythonFileScan,
+)
 from .static_scan import ScanJobs, infer_local_import_roots, iter_lazy_import_candidates, iter_scan_python_files
 from .utils import is_stdlib_module, iter_python_files, top_import_name
 from .uv import sync_check_uv
@@ -35,6 +43,7 @@ def analyze_project(
     entrypoint: str | None = None,
     entrypoint_timeout: float = 10.0,
     use_uv: bool = False,
+    dependency_scope: str = "all",
 ) -> AnalysisReport:
     project_root = Path(path).expanduser().resolve()
     if not project_root.exists():
@@ -42,7 +51,8 @@ def analyze_project(
     if project_root.is_file():
         project_root = project_root.parent
 
-    declared_dependencies, dep_warnings = load_declared_dependencies(project_root)
+    all_declared_dependencies, dep_warnings = load_declared_dependencies(project_root)
+    declared_dependencies = _filter_declared_dependencies(all_declared_dependencies, dependency_scope)
     python_files, file_warnings = iter_python_files(project_root, max_files=max_files, extra_excludes=excludes)
     summary = _collect_scan_summary(
         iter_scan_python_files(python_files, project_root, jobs=jobs),
@@ -130,6 +140,17 @@ def analyze_project(
         uv_lock=uv_lock,
         warnings=warnings,
     )
+
+
+def _filter_declared_dependencies(
+    dependencies: list[DeclaredDependency],
+    dependency_scope: str,
+) -> list[DeclaredDependency]:
+    if dependency_scope == "all":
+        return dependencies
+    if dependency_scope == "runtime":
+        return [dep for dep in dependencies if dep.scope == "runtime"]
+    raise ValueError("dependency_scope must be 'runtime' or 'all'.")
 
 
 def _collect_scan_summary(scans: Iterable[PythonFileScan]) -> _ScanSummary:

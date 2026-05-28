@@ -11,6 +11,7 @@ class DeclaredDependency:
     normalized_name: str
     source: str
     raw: str
+    scope: str = "runtime"
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,7 @@ class DependencyUsage:
     import_names: tuple[str, ...]
     reason: str
     confidence: str
+    scope: str = "runtime"
 
 
 @dataclass(frozen=True)

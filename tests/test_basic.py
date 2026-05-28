@@ -41,7 +41,9 @@ coverage = ["coverage[toml]>=7"]
     by_name = {item.name: item for item in report.declared_dependencies}
     assert {"requests", "pytest", "coverage"} <= set(by_name)
     assert by_name["pytest"].source == "pyproject.toml:[dependency-groups.test]"
-    assert by_name["coverage"].source == "pyproject.toml:[dependency-groups.test]"
+    assert by_name["coverage"].source == (
+        "pyproject.toml:[dependency-groups.coverage], pyproject.toml:[dependency-groups.test]"
+    )
 
 
 def test_nested_requirements_files_are_loaded(tmp_path: Path) -> None:

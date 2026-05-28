@@ -303,10 +303,15 @@ def _timing_table(timings: Iterable[ImportTiming]) -> list[str]:
 
 
 def _dependency_table(report: AnalysisReport) -> list[str]:
-    lines = ["| Dependency | Status | Matched imports | Confidence | Source |", "|---|---|---|---|---|"]
+    lines = [
+        "| Dependency | Scope | Status | Matched imports | Confidence | Source |",
+        "|---|---|---|---|---|---|",
+    ]
     for item in sorted(report.dependency_usage, key=lambda i: (i.status != "unused", i.dependency.lower()))[:50]:
         imports = ", ".join(f"`{name}`" for name in item.import_names) or "—"
-        lines.append(f"| `{item.dependency}` | {item.status} | {imports} | {item.confidence} | {item.source} |")
+        lines.append(
+            f"| `{item.dependency}` | {item.scope} | {item.status} | {imports} | {item.confidence} | {item.source} |"
+        )
     return lines
 
 

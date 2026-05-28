@@ -24,15 +24,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command")
     doctor = subparsers.add_parser("doctor", help="Run the default project health report.")
-    _add_analysis_options(doctor)
+    _add_analysis_options(doctor, default_scope="all")
     _add_report_options(doctor)
 
     analyze = subparsers.add_parser("analyze", help="Analyze a Python project.")
-    _add_analysis_options(analyze)
+    _add_analysis_options(analyze, default_scope="all")
     _add_report_options(analyze)
 
     check = subparsers.add_parser("check", help="Run CI-friendly optimization checks against a Python project.")
-    _add_analysis_options(check)
+    _add_analysis_options(check, default_scope="runtime")
     check.add_argument("--json", action="store_true", help="Emit machine-readable check results.")
     check.add_argument("--max-unused", type=int, default=0, help="Maximum likely unused dependencies. Default: 0.")
     check.add_argument("--max-undeclared", type=int, default=0, help="Maximum possible undeclared imports. Default: 0.")
@@ -68,7 +68,27 @@ def _add_report_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--output", "-o", help="Write the report to a file instead of stdout.")
 
 
-def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
+def _positive_int(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if value < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return value
+
+
+def _positive_float(raw: str) -> float:
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError("must be greater than 0")
+    return value
+
+
+def _add_analysis_options(parser: argparse.ArgumentParser, *, default_scope: str) -> None:
     parser.add_argument(
         "path",
         nargs="?",
@@ -90,13 +110,13 @@ def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--import-time-limit",
-        type=int,
+        type=_positive_int,
         default=20,
         help="Maximum third-party modules to time. Default: 20.",
     )
     parser.add_argument(
         "--import-time-timeout",
-        type=float,
+        type=_positive_float,
         default=10.0,
         help="Timeout per module import in seconds. Default: 10.",
     )
@@ -125,12 +145,23 @@ def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--entrypoint-timeout",
-        type=float,
+        type=_positive_float,
         default=10.0,
         help="Timeout for entrypoint startup measurement in seconds. Default: 10.",
     )
     parser.add_argument("--uv", action="store_true", help="Include uv.lock status when uv.lock is present.")
-    parser.add_argument("--max-files", type=int, default=5000, help="Maximum Python files to scan. Default: 5000.")
+    parser.add_argument(
+        "--max-files",
+        type=_positive_int,
+        default=5000,
+        help="Maximum Python files to scan. Default: 5000.",
+    )
+    parser.add_argument(
+        "--scope",
+        choices=("runtime", "all"),
+        default=default_scope,
+        help=f"Dependency scope to evaluate. Default: {default_scope}.",
+    )
     parser.add_argument(
         "--exclude",
         action="append",
@@ -141,7 +172,12 @@ def _add_analysis_options(parser: argparse.ArgumentParser) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        if isinstance(exc.code, int):
+            return exc.code
+        return 2
 
     if args.command is None:
         parser.print_help()
@@ -209,6 +245,7 @@ def _run_analysis(args: argparse.Namespace) -> AnalysisReport:
         entrypoint=args.entrypoint,
         entrypoint_timeout=args.entrypoint_timeout,
         use_uv=args.uv,
+        dependency_scope=args.scope,
     )
 
 

@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .models import ImportRecord, LazyImportCandidate, PythonFileScan, relpath
-from .utils import top_import_name
+from .utils import DEFAULT_EXCLUDE_DIRS, top_import_name
 
 _AUTO_PARALLEL_FILE_THRESHOLD = 64
 
@@ -36,6 +36,7 @@ class _ModuleImportCollector(ast.NodeVisitor):
         self.state = state
         self.function_depth = 0
         self.class_depth = 0
+        self.type_checking_depth = 0
 
     @property
     def in_deferred_code(self) -> bool:
@@ -46,7 +47,13 @@ class _ModuleImportCollector(ast.NodeVisitor):
         # Class bodies execute during import, but imports inside classes are not good lazy-import candidates.
         return self.function_depth == 0 and self.class_depth == 0
 
+    @property
+    def in_type_checking_only_code(self) -> bool:
+        return self.type_checking_depth > 0
+
     def visit_Import(self, node: ast.Import) -> None:  # noqa: N802
+        if self.in_type_checking_only_code:
+            return
         for alias in node.names:
             top = top_import_name(alias.name)
             bound_name = alias.asname or top
@@ -63,6 +70,8 @@ class _ModuleImportCollector(ast.NodeVisitor):
             )
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:  # noqa: N802
+        if self.in_type_checking_only_code:
+            return
         if node.level and node.level > 0:
             return
         if not node.module:
@@ -151,6 +160,29 @@ class _ModuleImportCollector(ast.NodeVisitor):
             self.visit(node.body)
         finally:
             self.function_depth -= 1
+
+    def visit_If(self, node: ast.If) -> None:  # noqa: N802
+        if _is_type_checking_test(node.test):
+            self.visit(node.test)
+            self.type_checking_depth += 1
+            try:
+                for stmt in node.body:
+                    self.visit(stmt)
+            finally:
+                self.type_checking_depth -= 1
+            for stmt in node.orelse:
+                self.visit(stmt)
+            return
+        self.generic_visit(node)
+
+
+def _is_type_checking_test(node: ast.AST) -> bool:
+    if isinstance(node, ast.Name):
+        return node.id == "TYPE_CHECKING"
+    if isinstance(node, ast.Attribute) and node.attr == "TYPE_CHECKING":
+        value = node.value
+        return isinstance(value, ast.Name) and value.id == "typing"
+    return False
 
 
 def scan_python_file(path: Path, root: Path) -> PythonFileScan:
@@ -282,11 +314,13 @@ def infer_local_import_roots(root: Path, python_files: Iterable[Path]) -> set[st
         if not base.exists():
             continue
         for child in base.iterdir():
-            if child.name.startswith("."):
+            if child.name.startswith(".") or child.name in DEFAULT_EXCLUDE_DIRS:
+                continue
+            if base == root and child.name == "src":
                 continue
             if child.is_file() and child.suffix == ".py" and child.name != "setup.py":
                 roots.add(child.stem)
-            elif child.is_dir() and (child / "__init__.py").exists():
+            elif child.is_dir() and ((child / "__init__.py").exists() or _contains_python_file(child)):
                 roots.add(child.name)
 
     # Fallback: file stems at project root can be imported by scripts.
@@ -299,3 +333,11 @@ def infer_local_import_roots(root: Path, python_files: Iterable[Path]) -> set[st
             roots.add(path.stem)
 
     return roots
+
+
+def _contains_python_file(directory: Path) -> bool:
+    for _current_root, dirs, filenames in os.walk(directory):
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in DEFAULT_EXCLUDE_DIRS]
+        if any(filename.endswith(".py") for filename in filenames):
+            return True
+    return False

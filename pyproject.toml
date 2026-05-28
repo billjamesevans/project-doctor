@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "project-doctor"
-version = "0.6.0"
+version = "0.6.1"
 description = "A local-first health checker for Python imports, dependencies, startup time, and package bloat."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,6 +33,7 @@ Homepage = "https://github.com/billjamesevans/project-doctor"
 Repository = "https://github.com/billjamesevans/project-doctor"
 Issues = "https://github.com/billjamesevans/project-doctor/issues"
 Changelog = "https://github.com/billjamesevans/project-doctor/releases"
+PyPI = "https://pypi.org/project/project-doctor/"
 
 [project.optional-dependencies]
 dev = [

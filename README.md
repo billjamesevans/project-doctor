@@ -1,6 +1,7 @@
 # Project Doctor
 
 [![CI](https://github.com/billjamesevans/project-doctor/actions/workflows/ci.yml/badge.svg)](https://github.com/billjamesevans/project-doctor/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/project-doctor.svg)](https://pypi.org/project/project-doctor/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 ![Project Doctor](https://img.shields.io/badge/project--doctor-passing-brightgreen)
@@ -26,12 +27,11 @@ Project Doctor is local-first and safe by default. Static scans parse source fil
 
 ## Install
 
-Current reliable install path:
-
-From this folder:
+Install from PyPI:
 
 ```bash
-python3 -m pip install -e .
+pip install project-doctor
+uv tool install project-doctor
 ```
 
 Then run:
@@ -40,17 +40,11 @@ Then run:
 project-doctor analyze /path/to/your/project
 ```
 
-Or without installing:
+For local development from this checkout:
 
 ```bash
+python3 -m pip install -e .
 PYTHONPATH=src python3 -m project_doctor analyze /path/to/your/project
-```
-
-After the PyPI release is live:
-
-```bash
-pip install project-doctor
-uv tool install project-doctor
 ```
 
 ## Quick examples
@@ -62,7 +56,9 @@ project-doctor analyze examples/sample_project --json -o project-doctor-report.j
 project-doctor analyze examples/sample_project --jobs auto --package-sizes
 project-doctor analyze examples/sample_project --entrypoint "python app.py"
 project-doctor analyze examples/sample_project --uv
+project-doctor analyze examples/sample_project --scope all
 project-doctor check examples/sample_project --max-unused 0
+project-doctor check examples/sample_project --scope runtime --max-unused 0
 project-doctor check examples/sample_project --import-time --json --max-import-ms 150
 project-doctor sync-check examples/sample_project/uv.lock
 project-doctor explain-package pandas examples/sample_project --uv
@@ -137,7 +133,7 @@ Project Doctor reads dependencies from:
 - common Poetry dependency sections
 - `requirements*.txt`, including nested `-r` and `--requirement` includes
 
-It compares declared dependencies against static imports. Results marked `unused` should be treated as a review queue, not an automatic delete list.
+It compares declared dependencies against static imports. Runtime dependencies, optional extras, and development groups are tagged with a `scope`. `analyze` and `doctor` default to `--scope all` so the report is complete; `check` defaults to `--scope runtime` so CI gates do not fail just because an optional or development dependency is unused by the main runtime path. Results marked `unused` should be treated as a review queue, not an automatic delete list.
 
 ### Import timings
 
@@ -210,6 +206,7 @@ Options:
   --entrypoint COMMAND            Measure startup for a real entrypoint command
   --entrypoint-timeout SECONDS    Timeout for entrypoint measurement, default 10
   --uv                            Include uv.lock status
+  --scope runtime|all             Dependency scope to evaluate, default all
   --max-files N                   Max Python files to scan, default 5000
   --exclude DIR                   Extra directory name to exclude; repeatable
 ```
@@ -234,6 +231,7 @@ Options:
   --entrypoint COMMAND            Measure startup for a real entrypoint command
   --entrypoint-timeout SECONDS    Timeout for entrypoint measurement, default 10
   --uv                            Include uv.lock status
+  --scope runtime|all             Dependency scope to evaluate, default runtime
   --max-files N                   Max Python files to scan, default 5000
   --exclude DIR                   Extra directory name to exclude; repeatable
 ```
@@ -262,7 +260,7 @@ Add Project Doctor to GitHub Actions as a dependency hygiene gate:
   run: project-doctor check . --max-unused 0 --max-undeclared 0 --max-package-mb 100
 ```
 
-Intended full workflow after first package release and name/package ownership confirmation:
+Full workflow:
 
 ```yaml
 name: project-doctor

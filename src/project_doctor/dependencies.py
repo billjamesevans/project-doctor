@@ -15,6 +15,30 @@ except ModuleNotFoundError:  # pragma: no cover - package requires py3.11+
 from .models import DeclaredDependency, DependencyUsage, PackageSize
 from .utils import canonicalize_name, import_name_guess, parse_requirement_name
 
+COMMON_DISTRIBUTION_IMPORTS: dict[str, tuple[str, ...]] = {
+    "beautifulsoup4": ("bs4",),
+    "django-debug-toolbar": ("debug_toolbar",),
+    "google-api-python-client": ("googleapiclient",),
+    "opencv-python": ("cv2",),
+    "opencv-python-headless": ("cv2",),
+    "pillow": ("PIL",),
+    "psycopg2-binary": ("psycopg2",),
+    "pyjwt": ("jwt",),
+    "pymysql": ("pymysql",),
+    "pyside6": ("PySide6",),
+    "python-dateutil": ("dateutil",),
+    "python-dotenv": ("dotenv",),
+    "pyyaml": ("yaml",),
+    "scikit-image": ("skimage",),
+    "scikit-learn": ("sklearn",),
+}
+
+COMMON_IMPORT_PROVIDERS: dict[str, tuple[str, ...]] = {}
+for _distribution, _import_names in COMMON_DISTRIBUTION_IMPORTS.items():
+    for _import_name in _import_names:
+        COMMON_IMPORT_PROVIDERS.setdefault(_import_name, ())
+        COMMON_IMPORT_PROVIDERS[_import_name] = (*COMMON_IMPORT_PROVIDERS[_import_name], _distribution)
+
 
 @dataclass(frozen=True)
 class InstalledPackageIndex:
@@ -63,10 +87,16 @@ class InstalledPackageIndex:
         names = self.distribution_to_imports.get(canonicalize_name(distribution))
         if names:
             return names
+        common_names = COMMON_DISTRIBUTION_IMPORTS.get(canonicalize_name(distribution))
+        if common_names:
+            return common_names
         return (import_name_guess(distribution),)
 
     def providers_for_import(self, import_name: str) -> tuple[str, ...]:
-        return self.import_to_distributions.get(import_name, ())
+        providers = self.import_to_distributions.get(import_name)
+        if providers:
+            return providers
+        return COMMON_IMPORT_PROVIDERS.get(import_name, ())
 
 
 def load_declared_dependencies(project_root: Path) -> tuple[list[DeclaredDependency], list[str]]:
@@ -75,7 +105,7 @@ def load_declared_dependencies(project_root: Path) -> tuple[list[DeclaredDepende
     This is deliberately conservative. The goal is to find likely dependency bloat,
     not to perfectly implement every packaging backend.
     """
-    dependencies: dict[tuple[str, str], DeclaredDependency] = {}
+    dependencies: dict[str, DeclaredDependency] = {}
     warnings: list[str] = []
 
     pyproject = project_root / "pyproject.toml"
@@ -98,22 +128,51 @@ def load_declared_dependencies(project_root: Path) -> tuple[list[DeclaredDepende
     return sorted(dependencies.values(), key=lambda d: (d.source, d.normalized_name)), warnings
 
 
-def _remember(deps: dict[tuple[str, str], DeclaredDependency], name: str, raw: str, source: str) -> None:
+def _merge_csv(left: str, right: str) -> str:
+    parts = [item.strip() for item in left.split(",")]
+    if right not in parts:
+        parts.append(right)
+    return ", ".join(parts)
+
+
+def _merge_scope(left: str, right: str) -> str:
+    if left == right:
+        return left
+    if "runtime" in {left, right}:
+        return "runtime"
+    if "optional" in {left, right}:
+        return "optional"
+    return "dev"
+
+
+def _remember(deps: dict[str, DeclaredDependency], name: str, raw: str, source: str, *, scope: str) -> None:
     normalized = canonicalize_name(name)
-    deps[(source, normalized)] = DeclaredDependency(
+    existing = deps.get(normalized)
+    if existing is not None:
+        deps[normalized] = DeclaredDependency(
+            name=existing.name,
+            normalized_name=existing.normalized_name,
+            source=_merge_csv(existing.source, source),
+            raw=_merge_csv(existing.raw, raw),
+            scope=_merge_scope(existing.scope, scope),
+        )
+        return
+
+    deps[normalized] = DeclaredDependency(
         name=name,
         normalized_name=normalized,
         source=source,
         raw=raw,
+        scope=scope,
     )
 
 
-def _add_pep621_dependencies(data: dict[str, Any], deps: dict[tuple[str, str], DeclaredDependency]) -> None:
+def _add_pep621_dependencies(data: dict[str, Any], deps: dict[str, DeclaredDependency]) -> None:
     project = data.get("project") or {}
     for raw in project.get("dependencies") or []:
         name = parse_requirement_name(str(raw))
         if name:
-            _remember(deps, name, str(raw), "pyproject.toml:[project.dependencies]")
+            _remember(deps, name, str(raw), "pyproject.toml:[project.dependencies]", scope="runtime")
 
     optional = project.get("optional-dependencies") or {}
     if isinstance(optional, dict):
@@ -121,20 +180,27 @@ def _add_pep621_dependencies(data: dict[str, Any], deps: dict[tuple[str, str], D
             for raw in reqs or []:
                 name = parse_requirement_name(str(raw))
                 if name:
-                    _remember(deps, name, str(raw), f"pyproject.toml:[project.optional-dependencies.{group}]")
+                    _remember(
+                        deps,
+                        name,
+                        str(raw),
+                        f"pyproject.toml:[project.optional-dependencies.{group}]",
+                        scope="optional",
+                    )
 
 
-def _add_poetry_dependencies(data: dict[str, Any], deps: dict[tuple[str, str], DeclaredDependency]) -> None:
+def _add_poetry_dependencies(data: dict[str, Any], deps: dict[str, DeclaredDependency]) -> None:
     poetry = ((data.get("tool") or {}).get("poetry") or {})
     for section_name in ("dependencies", "dev-dependencies"):
         section = poetry.get(section_name) or {}
         if not isinstance(section, dict):
             continue
+        scope = "dev" if section_name == "dev-dependencies" else "runtime"
         for name, spec in section.items():
             if canonicalize_name(name) == "python":
                 continue
             raw = f"{name} {spec}" if isinstance(spec, str) else f"{name} {spec!r}"
-            _remember(deps, str(name), raw, f"pyproject.toml:[tool.poetry.{section_name}]")
+            _remember(deps, str(name), raw, f"pyproject.toml:[tool.poetry.{section_name}]", scope=scope)
 
     groups = (poetry.get("group") or {})
     if isinstance(groups, dict):
@@ -142,14 +208,21 @@ def _add_poetry_dependencies(data: dict[str, Any], deps: dict[tuple[str, str], D
             section = ((group_data or {}).get("dependencies") or {})
             if not isinstance(section, dict):
                 continue
+            scope = "runtime" if canonicalize_name(str(group_name)) == "main" else "dev"
             for name, spec in section.items():
                 raw = f"{name} {spec}" if isinstance(spec, str) else f"{name} {spec!r}"
-                _remember(deps, str(name), raw, f"pyproject.toml:[tool.poetry.group.{group_name}.dependencies]")
+                _remember(
+                    deps,
+                    str(name),
+                    raw,
+                    f"pyproject.toml:[tool.poetry.group.{group_name}.dependencies]",
+                    scope=scope,
+                )
 
 
 def _add_dependency_groups(
     data: dict[str, Any],
-    deps: dict[tuple[str, str], DeclaredDependency],
+    deps: dict[str, DeclaredDependency],
     warnings: list[str],
 ) -> None:
     groups = data.get("dependency-groups") or {}
@@ -176,7 +249,7 @@ def _add_dependency_groups(
             if isinstance(entry, str):
                 name = parse_requirement_name(entry)
                 if name:
-                    _remember(deps, name, entry, source)
+                    _remember(deps, name, entry, source, scope="dev")
                 continue
 
             if isinstance(entry, dict) and set(entry) == {"include-group"}:
@@ -195,7 +268,7 @@ def _add_dependency_groups(
 
 def _add_requirements_file(
     req_file: Path,
-    deps: dict[tuple[str, str], DeclaredDependency],
+    deps: dict[str, DeclaredDependency],
     warnings: list[str],
     seen: set[Path],
 ) -> None:
@@ -203,6 +276,7 @@ def _add_requirements_file(
     if req_file in seen:
         return
     seen.add(req_file)
+    scope = _requirements_scope(req_file)
 
     try:
         lines = req_file.read_text(encoding="utf-8").splitlines()
@@ -218,7 +292,14 @@ def _add_requirements_file(
 
         name = parse_requirement_name(raw)
         if name:
-            _remember(deps, name, raw, req_file.name)
+            _remember(deps, name, raw, req_file.name, scope=scope)
+
+
+def _requirements_scope(req_file: Path) -> str:
+    stem = canonicalize_name(req_file.stem)
+    if any(part in stem.split("-") for part in ("dev", "test", "tests", "lint", "docs", "doc")):
+        return "dev"
+    return "runtime"
 
 
 def _parse_requirement_include(raw: str) -> str | None:
@@ -256,6 +337,9 @@ def distribution_import_names(
     ]
     if names:
         return tuple(sorted(set(names)))
+    common_names = COMMON_DISTRIBUTION_IMPORTS.get(canonicalize_name(distribution))
+    if common_names:
+        return common_names
     return (import_name_guess(distribution),)
 
 
@@ -277,6 +361,7 @@ def dependency_usage_status(
                     import_names=used_names,
                     reason="A matching import name was found in the source tree.",
                     confidence="high",
+                    scope=dep.scope,
                 )
             )
         else:
@@ -291,6 +376,7 @@ def dependency_usage_status(
                         "plugins, CLI entry points, and optional code paths."
                     ),
                     confidence="medium",
+                    scope=dep.scope,
                 )
             )
     return usage
@@ -307,7 +393,7 @@ def undeclared_imports(
         if isinstance(package_index, InstalledPackageIndex):
             providers = package_index.providers_for_import(import_name)
         else:
-            providers = package_index.get(import_name, ())
+            providers = package_index.get(import_name, ()) or COMMON_IMPORT_PROVIDERS.get(import_name, ())
         if providers:
             if not any(canonicalize_name(provider) in declared for provider in providers):
                 missing.add(import_name)

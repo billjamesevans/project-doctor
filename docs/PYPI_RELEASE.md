@@ -1,17 +1,17 @@
 # PyPI Release
 
-Project Doctor publishes as the `project-doctor` distribution and exposes the `project-doctor` console command. The Python import package is `project_doctor`.
+Project Doctor publishes at `https://pypi.org/project/project-doctor/` as the `project-doctor` distribution and exposes the `project-doctor` console command. The Python import package is `project_doctor`.
 
 ## Preconditions
 
-- Confirm `https://pypi.org/project/project-doctor/` is available or controlled by this project.
+- Confirm `https://pypi.org/project/project-doctor/` is controlled by the `billjamesevans` PyPI user.
 - Prefer GitHub Trusted Publishing with `.github/workflows/publish.yml`. Use a PyPI API token only if Trusted Publishing is not available.
 - Do not commit tokens, `.pypirc`, or environment files.
 - Build from a clean checkout after tests, linting, type checks, security checks, and package audits pass.
 
 ## Trusted Publishing
 
-Configure a PyPI trusted publisher for:
+The PyPI trusted publisher should be configured for:
 
 - PyPI project: `project-doctor`
 - Owner: `billjamesevans`
@@ -19,7 +19,7 @@ Configure a PyPI trusted publisher for:
 - Workflow: `publish.yml`
 - Environment: `pypi`
 
-Then publish by creating a GitHub release for a version tag or running the Publish to PyPI workflow manually.
+Publish by creating a GitHub release for a version tag or running the Publish to PyPI workflow manually.
 
 ## Build And Check
 
